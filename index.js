@@ -47,17 +47,49 @@ opLogEE.on('insert', data => {
 	db.collection(`${config.prefix}${coll}`).insertOne(obj).then(result => console.log(result));
 });
 
-opLogEE.on('update', data => {
+opLogEE.on('update', async data => {
 	console.log('update op', data);
 	const coll = data.ns.split('.')[1];
 	const query = data.o2;
+	const doc = await db.collection(`${config.prefix}${coll}`).findOne(query);
 	const obj = data.o || {};
-	obj.doc_id = obj._id;
-	delete obj._id;
-	obj.oplog_ts = data.ts;
-	
-	db.collection(`${config.prefix}${coll}`).insertOne()
+	doc.oplog_ts = data.ts;
+
+	// obj might have three forms: 
+	// $set: {<field>: <value>}, 
+	// $unset: {<field>: <value>}, 
+	// <field>: <value>
+	// warning: array notation/ dot notation
+	const $set = obj.$set;
+	const $unset = obj.$unset;
+	if ($set) {
+		resolveField(doc, $set);
+	}
+	console.log(doc);
 });
+
+function resolveField(doc, key_value) {
+	for (let key in key_value) {
+		let chain = key.split('.');
+		if (chain.length === 1) {
+			if (Array.isArray(doc) && typeof chain[0] === 'number') {
+				doc.splice(chain[0], 0, key_value[key]);
+			} else {
+				doc[chain[0]] = key_value[key];
+			}
+			continue;
+		} else {
+			if (!doc[chain[0]]) {
+				if (typeof chain[1] === 'number') {
+					doc[chain[0]] = [];
+				} else {
+					doc[chain[0]] = {};
+				}
+			}
+			resolveField(doc[chain[0]], {[chain.slice(1).join('.')]: key_value[key]});
+		}
+	}
+}
 
 opLogEE.on('delete', data => {
 	console.log('delete op', data)
