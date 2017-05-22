@@ -48,7 +48,15 @@ opLogEE.on('insert', data => {
 });
 
 opLogEE.on('update', data => {
-	console.log('update op', data)
+	console.log('update op', data);
+	const coll = data.ns.split('.')[1];
+	const query = data.o2;
+	const obj = data.o || {};
+	obj.doc_id = obj._id;
+	delete obj._id;
+	obj.oplog_ts = data.ts;
+	
+	db.collection(`${config.prefix}${coll}`).insertOne()
 });
 
 opLogEE.on('delete', data => {
