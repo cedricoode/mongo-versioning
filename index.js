@@ -9,7 +9,7 @@ const config = {
 	oplogUri: 'mongodb://localhost:27018/local',
 	oplogColl: 'oplog.rs',
 	versionAppliedColl: 'versionApplied',
-	collections: [{name: 'measurements'}],
+	collections: [{name: 'patients'}],
 	prefix: 'history_',
 }
 
@@ -37,17 +37,17 @@ function getResumePoint(db) {
 	}));
 }
 
-opLogEE.on('insert', data => {
+opLogEE.on('insert', (data, count, st) => {
 	console.log('insert op');
 	const coll = data.ns.split('.')[1];
 	const obj = data.o || {};
 	obj.doc_id = obj._id;
 	delete obj._id;
 	obj.versioning_ts = data.ts;
-	db.collection(`${config.prefix}${coll}`).insertOne(obj);
+	db.collection(`${config.prefix}${coll}`).insertOne(obj).then(() => {console.log('operation result for: ', count); st.resume();});
 });
 
-opLogEE.on('update', async data => {
+opLogEE.on('update', async (data, count, st) => {
 	console.log('update op');
 	const collName = data.ns.split('.')[1];
 	
@@ -70,7 +70,7 @@ opLogEE.on('update', async data => {
 
 	replayUpdate(doc, update);
 	
-	await db.collection(`${config.prefix}${collName}`).insertOne(doc);
+	await db.collection(`${config.prefix}${collName}`).insertOne(doc).then(() => {console.log('operation result for: ', count); st.resume();});
 });
 
 function replayUpdate(doc, update) {
@@ -127,7 +127,7 @@ function setField(doc, key_value) {
 	}
 }
 
-opLogEE.on('delete', data => {
+opLogEE.on('delete', (data, count) => {
 	//console.log('delete op', data)
 	const coll = data.ns.split('.')[1];
 	const obj = data.o || {};
@@ -135,8 +135,13 @@ opLogEE.on('delete', data => {
 	delete obj._id;
 	obj.versioning_ts = data.ts;
 	obj.oplog_delete = true;
-	db.collection(`${config.prefix}${coll}`).insertOne(obj);
+	db.collection(`${config.prefix}${coll}`).insertOne(obj).then(() => {console.log('operation result for: ', count); st.resume();});
 });
+
+opLogEE.on('op', (data, count, st) => {
+	console.log('operation result for: ', count);
+	st.resume();
+})
 
 opLogEE.on('error', err => {
 	console.log('oplog event emitter error: ', err);
@@ -178,20 +183,22 @@ async function start() {
 		noCursorTimeout: true,
 		oplogReplay: true
 	}).stream();
+	var count = 1;
 	st.on('data', data => {
+		st.pause();
 		console.log('new data');
 		switch(data.op) {
 			case 'i':
-				opLogEE.emit('insert', data);
+				opLogEE.emit('insert', data, count++, st);
 				break;
 			case 'u':
-				opLogEE.emit('update', data);
+				opLogEE.emit('update', data, count++, st);
 				break;
 			case 'd':
-				opLogEE.emit('delete', data)
+				opLogEE.emit('delete', data, count++, st);
 				break;
 			default:
-				opLogEE.emit('op', data);
+				opLogEE.emit('op', data, count++, st);
 				break;
 		}
 	});
