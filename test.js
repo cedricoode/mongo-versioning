@@ -1,7 +1,9 @@
-const { init, start, stop } = require('./index.js');
+const MongoVersioning = require('./index.js');
 
-init().then(() => {
-	start().catch(err => console.log(err));
+const mongoVersioning = new MongoVersioning();
+
+mongoVersioning.init().then(() => {
+	mongoVersioning.start();
 })
 
 process.on('unhandledRejection', (reason) => {

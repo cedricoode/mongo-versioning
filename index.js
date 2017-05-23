@@ -1,53 +1,96 @@
-const MongoOplog = require('mongo-oplog');
-const { MongoClient, Timestamp, ObjectID } = require('mongodb');
+const { MongoClient } = require('mongodb');
 const EventEmitter = require('events');
+const {
+	getResumePoint,
+	replayUpdate,
+	counstructTailingQuery
+} = require('./src');
 
-const opLogEE = new EventEmitter();
-
-const config = {
+const DEFAULT_CONFIG = {
 	uri: 'mongodb://localhost:27018/test',
 	oplogUri: 'mongodb://localhost:27018/local',
 	oplogColl: 'oplog.rs',
 	versionAppliedColl: 'versionApplied',
-	collections: [{name: 'patients'}],
+	collections: [{name: 'patients'}, {name: 'measurements'}],
 	prefix: 'history_',
 }
 
-let db;
-
-/**
- * Called once connection is established.
- * Set oplog tailing starting point, strategy:
- * 1. check prefix_collection last insert point.
- * 2. if this insert point doesnt exist, go through initiation process, else go to 3.
- * 3. tail the log greater than this point for this collection
- */
-function getResumePoint(db) {
-	return Promise.all(config.collections.map(coll => {
-		const c = db.collection(`${config.prefix}${coll.name}`)
-		return c.find().sort({versioning_ts: -1, _id: -1}).limit(1).toArray()
-			.then(data => {
-				if (data && data.length > 0) {
-					coll.lowerBound = data[0].versioning_ts; // lower bound to last applied
-				}
-				else {
-					coll.lowerBound = Timestamp(0, 0); // lower bound to all the previous data
-				}
-			});
-	}));
+function MongoVersioning(config) {
+	this.configuration = Object.assign({}, DEFAULT_CONFIG);
+	if (config) {
+		for (let i in this.configuration) {
+			if (config[i]) {
+				this.configuration[i] = config[i];
+			}
+		}
+	}
+	this.oplogEE = new EventEmitter();
+	this.oplogEE.on('insert', this.insertListener.bind(this));
+	this.oplogEE.on('update', this.updateListener.bind(this));
+	this.oplogEE.on('delete', this.deleteListener.bind(this));
+	this.oplogEE.on('op', this.opListener.bind(this));
+	this.oplogEE.on('error', this.errListener.bind(this));	
 }
 
-opLogEE.on('insert', (data, count, st) => {
+MongoVersioning.prototype.start = async function start() {
+	// Construct tailing query
+	const query = counstructTailingQuery(this.configuration);
+	console.log('query is: ', JSON.stringify(query));
+	this.oplogDb = await MongoClient.connect(this.configuration.oplogUri);
+	var oplog = this.oplogDb.collection('oplog.rs');
+	this.mongoEE = oplog.find(query, {
+		awaitData: true, 
+		tailable: true,
+		noCursorTimeout: true,
+	}).stream();
+	var count = 1;
+	this.mongoEE.on('data', data => {
+		console.log('new data: ', data.ns);
+		this.mongoEE.pause();
+		switch(data.op) {
+			case 'i':
+				this.oplogEE.emit('insert', data, count++);
+				break;
+			case 'u':
+				this.oplogEE.emit('update', data, count++);
+				break;
+			case 'd':
+				this.oplogEE.emit('delete', data, count++);
+				break;
+			default:
+				this.oplogEE.emit('op', data, count++);
+				break;
+		}
+	});
+	st.on('error', err => {
+		console.log(err)
+		st.removeAllListeners();
+	}); 
+}
+
+MongoVersioning.prototype.init = async function init() {
+	// Connect to targetting database
+	this.db = await MongoClient.connect(this.configuration.uri);
+	
+	// Setup resume point
+	await getResumePoint(this.db, this.configuration);
+	console.log('resume point: ', this.configuration.collections);
+	return this;
+}
+
+MongoVersioning.prototype.stop = function stop() {}
+
+MongoVersioning.prototype.insertListener = function insertListener(data, count) {
 	console.log('insert op');
 	const coll = data.ns.split('.')[1];
 	const obj = data.o || {};
 	obj.doc_id = obj._id;
 	delete obj._id;
 	obj.versioning_ts = data.ts;
-	db.collection(`${config.prefix}${coll}`).insertOne(obj).then(() => {console.log('operation result for: ', count); st.resume();});
-});
+	this.db.collection(`${this.configuration.prefix}${coll}`).insertOne(obj).then(() => {console.log('operation result for: ', count); this.mongoEE.resume();});
+}
 
-opLogEE.on('update', async (data, count, st) => {
+MongoVersioning.prototype.updateListener = async function updateListener(data, count) {
 	console.log('update op');
 	const collName = data.ns.split('.')[1];
 	
@@ -58,7 +101,7 @@ opLogEE.on('update', async (data, count, st) => {
 		delete query._id;
 	}
 
-	const doc = await db.collection(`${config.prefix}${collName}`)
+	const doc = await this.db.collection(`${this.configuration.prefix}${collName}`)
 		.find(query)
 		.sort({_id: -1})
 		.limit(1)
@@ -70,155 +113,27 @@ opLogEE.on('update', async (data, count, st) => {
 
 	replayUpdate(doc, update);
 	
-	await db.collection(`${config.prefix}${collName}`).insertOne(doc).then(() => {console.log('operation result for: ', count); st.resume();});
-});
-
-function replayUpdate(doc, update) {
-	const $set = update.$set;
-	const $unset = update.$unset;
-	if ($set) {
-		setField(doc, $set);
-	}
-	if ($unset) {
-		unsetField(doc, $unset);
-	}
-	delete update.$set;
-	delete update.$unset;
-	delete update._id;
-	setField(doc, update);
-	delete doc._id;
+	await this.db.collection(`${this.configuration.prefix}${collName}`).insertOne(doc).then(() => {console.log('operation result for: ', count); this.mongoEE.resume();});
 }
 
-function unsetField(doc, key_value) {
-	for (let key in key_value) {
-		let chain = key.split('.');
-		chain.reduce((acc, cur, ind, arr) => {
-			if (!acc) {
-				return null;
-			}
-			if (ind === arr.length - 1) {
-				delete acc[cur];
-			}
-			return acc[cur];
-		}, doc)
-	}
-}
-
-function setField(doc, key_value) {
-	for (let key in key_value) {
-		let chain = key.split('.');
-		if (chain.length === 1) {
-			if (Array.isArray(doc) && !isNaN(parseInt(chain[0]))) {
-				doc.splice(chain[0], 0, key_value[key]);
-			} else {
-				doc[chain[0]] = key_value[key];
-			}
-			continue;
-		} else {
-			if (!doc[chain[0]]) {
-				if (!isNaN(parseInt(chain[1]))) {
-					doc[chain[0]] = [];
-				} else {
-					doc[chain[0]] = {};
-				}
-			}
-			setField(doc[chain[0]], {[chain.slice(1).join('.')]: key_value[key]});
-		}
-	}
-}
-
-opLogEE.on('delete', (data, count) => {
-	//console.log('delete op', data)
+MongoVersioning.prototype.deleteListener = function deleteListener(data, count) {
+		//console.log('delete op', data)
 	const coll = data.ns.split('.')[1];
 	const obj = data.o || {};
 	obj.doc_id = obj._id;
 	delete obj._id;
 	obj.versioning_ts = data.ts;
 	obj.oplog_delete = true;
-	db.collection(`${config.prefix}${coll}`).insertOne(obj).then(() => {console.log('operation result for: ', count); st.resume();});
-});
+	this.db.collection(`${this.configuration.prefix}${coll}`).insertOne(obj).then(() => {console.log('operation result for: ', count); this.mongoEE.resume();});
+}
 
-opLogEE.on('op', (data, count, st) => {
+MongoVersioning.prototype.opListener = function opListener(data, count) {
 	console.log('operation result for: ', count);
-	st.resume();
-})
-
-opLogEE.on('error', err => {
-	console.log('oplog event emitter error: ', err);
-});
-
-async function init(configuration) {
-	// Override local configuration
-	if (configuration) {
-		for (let i in config) {
-			if (configuration[i]) {
-				config[i] = configuration[i];
-			}
-		}
-	}
-	// Connect to targetting database
-	db = await MongoClient.connect(config.uri);
-	
-	// Setup resume point
-	await getResumePoint(db);
-	console.log('resume point: ', config.collections);
+	this.mongoEE.resume();
 }
 
-function counstructTailingQuery() {
-	const query = {$or: []};
-	config.collections.forEach(coll => {
-		query.$or.push({ns: `test.${coll.name}`, ts: {$gt: coll.lowerBound}})
-	});
-	return query;
+MongoVersioning.prototype.errListener = function errListener(data, count) {
+	console.log('oplog event emitter error: ', err);	
 }
 
-async function start() {
-	// Construct tailing query
-	const query = counstructTailingQuery();
-	var db = await MongoClient.connect(config.oplogUri);
-	var oplog = db.collection('oplog.rs');
-	st = oplog.find(query, {
-		awaitData: true, 
-		tailable: true,
-		noCursorTimeout: true,
-		oplogReplay: true
-	}).stream();
-	var count = 1;
-	st.on('data', data => {
-		st.pause();
-		console.log('new data');
-		switch(data.op) {
-			case 'i':
-				opLogEE.emit('insert', data, count++, st);
-				break;
-			case 'u':
-				opLogEE.emit('update', data, count++, st);
-				break;
-			case 'd':
-				opLogEE.emit('delete', data, count++, st);
-				break;
-			default:
-				opLogEE.emit('op', data, count++, st);
-				break;
-		}
-	});
-	st.on('error', err => {
-		console.log(err)
-		st.removeAllListener();
-	});
-	st.on('end', () => {
-		st.removeAllListener();
-		console.log('ended')
-	});
-	return opLogEE;
-}
-
-function stop() {
-
-}
-
-module.exports = {
-	init,
-	start,
-	stop,
-}
+module.exports = MongoVersioning;
