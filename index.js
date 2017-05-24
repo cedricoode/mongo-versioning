@@ -68,9 +68,14 @@ MongoVersioning.prototype.start = async function start() {
 		}
 	});
 	this.mongoEE.on('error', err => {
-		console.log(err)
-		st.removeAllListeners();
-	}); 
+		handleError(err);
+	});
+	this.mongoEE.on('close', () => {
+		console.log('Mongo cursor: cursor closed!');
+	});
+	this.mongoEE.on('end', () => {
+		console.log('Mongo cursor: no more data here!');
+	})
 }
 
 /**
@@ -97,7 +102,10 @@ MongoVersioning.prototype.setUpStream = function setUpStream(key) {
 				break;
 		}
 	});
-	passThrough.on('error', err => console.log(`passThrough stream error, ${key}: `, err));
+	passThrough.on('error', err => {
+		console.log(`passThrough stream error, ${key}: `, err);
+		handleError(err);
+	});
 	this.streams[key] = passThrough;
 }
 
@@ -116,7 +124,6 @@ MongoVersioning.prototype.stop = function stop() {
 }
 
 MongoVersioning.prototype.insertListener = function insertListener(data, count, strm) {
-	console.log('insert op');
 	const collName = data.ns.split('.')[1];
 	const doc = data.o || {};
 	doc.versioning_id = doc._id;
@@ -127,7 +134,6 @@ MongoVersioning.prototype.insertListener = function insertListener(data, count, 
 }
 
 MongoVersioning.prototype.updateListener = async function updateListener(data, count, strm) {
-	console.log('update op');
 	const collName = data.ns.split('.')[1];
 	
 	const query = data.o2;
@@ -172,6 +178,10 @@ MongoVersioning.prototype.opListener = function opListener(data, count, strm) {
 
 MongoVersioning.prototype.errListener = function errListener(data, count) {
 	console.log('oplog event emitter error: ', err);	
+}
+
+function handleError(err) {
+	console.log(err);
 }
 
 module.exports = MongoVersioning;
