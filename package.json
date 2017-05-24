@@ -1,15 +1,20 @@
 {
   "name": "mongo-versioning",
-  "version": "1.0.0",
-  "description": "",
+  "version": "0.0.1",
+  "description": "mongo versioning as name suggests",
   "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://cedricode@gitlab.com/cedricode/mongo-versioning.git"
+  },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "mongo-oplog": "^2.0.2"
-  }
+  "keywords": [
+    "Mongo",
+    "Database versioning"
+  ],
+  "author": "illsuion.ever@gmail.com",
+  "license": "WTFPL",
+  "dependencies": {}
 }
