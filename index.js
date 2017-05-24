@@ -129,6 +129,7 @@ MongoVersioning.prototype.insertListener = function insertListener(data, count, 
 	doc.versioning_id = doc._id;
 	delete doc._id;
 	doc.versioning_ts = data.ts;
+	doc.versioning_version = 0;
 	this.db.collection(this.prefixedColl[collName]).insertOne(doc)
 		.then(() => {console.log(`operation result for: ${collName}`, count); strm.resume();});
 }
@@ -154,7 +155,7 @@ MongoVersioning.prototype.updateListener = async function updateListener(data, c
 	const update = data.o || {};
 
 	replayUpdate(doc, update);
-	
+	doc.versioning_version = doc.versioning_version + 1;
 	await this.db.collection(this.prefixedColl[collName]).insertOne(doc)
 		.then(() => {console.log(`operation result for: ${collName}`, count); strm.resume();});
 }
