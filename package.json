@@ -16,5 +16,7 @@
   ],
   "author": "illsuion.ever@gmail.com",
   "license": "WTFPL",
-  "dependencies": {}
+  "dependencies": {
+    "mongodb": "^2.2.27"
+  }
 }
