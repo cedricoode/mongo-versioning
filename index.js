@@ -1,5 +1,6 @@
 const { MongoClient } = require('mongodb');
 const EventEmitter = require('events');
+const { PassThrough } = require('stream');
 const {
 	getResumePoint,
 	replayUpdate,
@@ -33,7 +34,8 @@ function MongoVersioning(config) {
 	this.prefixedColl = {};
 	this.configuration.collections.forEach(coll => {
 		this.prefixedColl[coll.name] = `${this.configuration.prefix}${coll.name}`;
-	})
+	});
+	this.streams = {};
 }
 
 MongoVersioning.prototype.start = async function start() {
@@ -47,29 +49,56 @@ MongoVersioning.prototype.start = async function start() {
 		tailable: true,
 		noCursorTimeout: true,
 	}).stream();
-	var count = 1;
+	let count = 0;
 	this.mongoEE.on('data', data => {
-		console.log('new data: ', data.ns);
-		this.mongoEE.pause();
-		switch(data.op) {
-			case 'i':
-				this.oplogEE.emit('insert', data, count++);
-				break;
-			case 'u':
-				this.oplogEE.emit('update', data, count++);
-				break;
-			case 'd':
-				this.oplogEE.emit('delete', data, count++);
-				break;
-			default:
-				this.oplogEE.emit('op', data, count++);
-				break;
+		console.log(`new data: ${count++}: `, data.ns);		
+		const collName = data.ns.split('.')[1];
+		if (!this.streams[collName]) {
+			this.setUpStream(collName);
+		}
+		const writeOk = this.streams[collName].write(data); // relate to highWatermark
+		if (!writeOk) {
+			this.mongoEE.pause();
+			this.streams[collName].once('drain',
+				() => {
+					this.mongoEE.resume();
+					this.streams[collName].write(data)
+				}
+			);
 		}
 	});
-	st.on('error', err => {
+	this.mongoEE.on('error', err => {
 		console.log(err)
 		st.removeAllListeners();
 	}); 
+}
+
+/**
+ * Set up a stream to listen for collection data, this stream will dispatch 
+ * relevant event data to event handlers and consume the data one by one.
+ */
+MongoVersioning.prototype.setUpStream = function setUpStream(key) {
+	let count = 0;
+	const passThrough = new PassThrough({readableObjectMode: true, writableObjectMode: true});
+	passThrough.on('data', data => {
+		passThrough.pause();
+		switch(data.op) {
+			case 'i':
+				this.oplogEE.emit('insert', data, count++, passThrough);
+				break;
+			case 'u':
+				this.oplogEE.emit('update', data, count++, passThrough);
+				break;
+			case 'd':
+				this.oplogEE.emit('delete', data, count++, passThrough);
+				break;
+			default:
+				this.oplogEE.emit('op', data, count++, passThrough);
+				break;
+		}
+	});
+	passThrough.on('error', err => console.log(`passThrough stream error, ${key}: `, err));
+	this.streams[key] = passThrough;
 }
 
 MongoVersioning.prototype.init = async function init() {
@@ -86,7 +115,7 @@ MongoVersioning.prototype.stop = function stop() {
 	this.oplogEE.removeAllListeners();
 }
 
-MongoVersioning.prototype.insertListener = function insertListener(data, count) {
+MongoVersioning.prototype.insertListener = function insertListener(data, count, strm) {
 	console.log('insert op');
 	const collName = data.ns.split('.')[1];
 	const doc = data.o || {};
@@ -94,10 +123,10 @@ MongoVersioning.prototype.insertListener = function insertListener(data, count) 
 	delete doc._id;
 	doc.versioning_ts = data.ts;
 	this.db.collection(this.prefixedColl[collName]).insertOne(doc)
-		.then(() => {console.log('operation result for: ', count); this.mongoEE.resume();});
+		.then(() => {console.log(`operation result for: ${collName}`, count); strm.resume();});
 }
 
-MongoVersioning.prototype.updateListener = async function updateListener(data, count) {
+MongoVersioning.prototype.updateListener = async function updateListener(data, count, strm) {
 	console.log('update op');
 	const collName = data.ns.split('.')[1];
 	
@@ -121,10 +150,10 @@ MongoVersioning.prototype.updateListener = async function updateListener(data, c
 	replayUpdate(doc, update);
 	
 	await this.db.collection(this.prefixedColl[collName]).insertOne(doc)
-		.then(() => {console.log('operation result for: ', count); this.mongoEE.resume();});
+		.then(() => {console.log(`operation result for: ${collName}`, count); strm.resume();});
 }
 
-MongoVersioning.prototype.deleteListener = function deleteListener(data, count) {
+MongoVersioning.prototype.deleteListener = function deleteListener(data, count, strm) {
 		//console.log('delete op', data)
 	const collName = data.ns.split('.')[1];
 	const obj = data.o || {};
@@ -133,12 +162,12 @@ MongoVersioning.prototype.deleteListener = function deleteListener(data, count) 
 	obj.versioning_ts = data.ts;
 	obj.versioning_delete = true;
 	this.db.collection(this.prefixedColl[collName]).insertOne(obj)
-		.then(() => {console.log('operation result for: ', count); this.mongoEE.resume();});
+		.then(() => {console.log(`operation result for: ${collName}`, count); strm.resume();});
 }
 
-MongoVersioning.prototype.opListener = function opListener(data, count) {
-	console.log('operation result for: ', count);
-	this.mongoEE.resume();
+MongoVersioning.prototype.opListener = function opListener(data, count, strm) {
+	console.log(`operation result for: ${data.op}`, count);
+	strm.resume();
 }
 
 MongoVersioning.prototype.errListener = function errListener(data, count) {
