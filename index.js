@@ -29,7 +29,11 @@ function MongoVersioning(config) {
 	this.oplogEE.on('update', this.updateListener.bind(this));
 	this.oplogEE.on('delete', this.deleteListener.bind(this));
 	this.oplogEE.on('op', this.opListener.bind(this));
-	this.oplogEE.on('error', this.errListener.bind(this));	
+	this.oplogEE.on('error', this.errListener.bind(this));
+	this.prefixedColl = {};
+	this.configuration.collections.forEach(coll => {
+		this.prefixedColl[coll.name] = `${this.configuration.prefix}${coll.name}`;
+	})
 }
 
 MongoVersioning.prototype.start = async function start() {
@@ -78,16 +82,19 @@ MongoVersioning.prototype.init = async function init() {
 	return this;
 }
 
-MongoVersioning.prototype.stop = function stop() {}
+MongoVersioning.prototype.stop = function stop() {
+	this.oplogEE.removeAllListeners();
+}
 
 MongoVersioning.prototype.insertListener = function insertListener(data, count) {
 	console.log('insert op');
-	const coll = data.ns.split('.')[1];
-	const obj = data.o || {};
-	obj.doc_id = obj._id;
-	delete obj._id;
-	obj.versioning_ts = data.ts;
-	this.db.collection(`${this.configuration.prefix}${coll}`).insertOne(obj).then(() => {console.log('operation result for: ', count); this.mongoEE.resume();});
+	const collName = data.ns.split('.')[1];
+	const doc = data.o || {};
+	doc.versioning_id = doc._id;
+	delete doc._id;
+	doc.versioning_ts = data.ts;
+	this.db.collection(this.prefixedColl[collName]).insertOne(doc)
+		.then(() => {console.log('operation result for: ', count); this.mongoEE.resume();});
 }
 
 MongoVersioning.prototype.updateListener = async function updateListener(data, count) {
@@ -95,13 +102,13 @@ MongoVersioning.prototype.updateListener = async function updateListener(data, c
 	const collName = data.ns.split('.')[1];
 	
 	const query = data.o2;
-	// map _id to doc_id
+	// map _id to versioning_id
 	if (query._id) {
-		query.doc_id = query._id;
+		query.versioning_id = query._id;
 		delete query._id;
 	}
 
-	const doc = await this.db.collection(`${this.configuration.prefix}${collName}`)
+	const doc = await this.db.collection(this.prefixedColl[collName])
 		.find(query)
 		.sort({_id: -1})
 		.limit(1)
@@ -113,18 +120,20 @@ MongoVersioning.prototype.updateListener = async function updateListener(data, c
 
 	replayUpdate(doc, update);
 	
-	await this.db.collection(`${this.configuration.prefix}${collName}`).insertOne(doc).then(() => {console.log('operation result for: ', count); this.mongoEE.resume();});
+	await this.db.collection(this.prefixedColl[collName]).insertOne(doc)
+		.then(() => {console.log('operation result for: ', count); this.mongoEE.resume();});
 }
 
 MongoVersioning.prototype.deleteListener = function deleteListener(data, count) {
 		//console.log('delete op', data)
-	const coll = data.ns.split('.')[1];
+	const collName = data.ns.split('.')[1];
 	const obj = data.o || {};
-	obj.doc_id = obj._id;
+	obj.versioning_id = obj._id;
 	delete obj._id;
 	obj.versioning_ts = data.ts;
-	obj.oplog_delete = true;
-	this.db.collection(`${this.configuration.prefix}${coll}`).insertOne(obj).then(() => {console.log('operation result for: ', count); this.mongoEE.resume();});
+	obj.versioning_delete = true;
+	this.db.collection(this.prefixedColl[collName]).insertOne(obj)
+		.then(() => {console.log('operation result for: ', count); this.mongoEE.resume();});
 }
 
 MongoVersioning.prototype.opListener = function opListener(data, count) {
