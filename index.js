@@ -222,6 +222,38 @@ MongoVersioning.prototype.errListener = function errListener(data, count) {
 	console.log('oplog event emitter error: ', err);	
 }
 
+/**
+ * Method primarily removes versioning* internal field and map
+ * to relevent method.
+ * e.g. versioning_id -> _id
+ * versioning_version -> version|versioning_version
+ * versioning_ts -> void|null
+ * @param {Object} doc versioned doc to get removed.
+ */
+MongoVersioning.mapToInstance = function mapToInstance(doc) {
+	for (let prop in doc) {
+		if (prop.indexOf('versioning') === 0 && doc.hasOwnProperty(prop)) {
+			switch(prop) {
+				case 'versioning_id':
+				  doc._id = doc.versioning_id; // Override original mongodb _id.
+					delete doc.versioning_id;
+					break;
+				case 'versioning_ts':
+					delete doc.versioning_ts;
+					break;
+				case 'versioning_version':
+					if (doc.version) {
+						break; // If version already exists, keep it.
+					} else { 
+						doc.version = doc.versioning_version; // If not map versioning_version to version
+						delete doc.versioning_version;
+						break;
+					}
+			}
+		}
+	}
+}
+
 function handleError(err) {
 	console.log(err);
 }
