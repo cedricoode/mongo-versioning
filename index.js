@@ -252,6 +252,7 @@ MongoVersioning.mapToInstance = function mapToInstance(doc) {
 			}
 		}
 	}
+	return doc;
 }
 
 function handleError(err) {
