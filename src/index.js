@@ -1,4 +1,6 @@
 const { Timestamp, ObjectID } = require('mongodb');
+const URL = require('url');
+
 /**
  * Called once connection is established.
  * Set oplog tailing starting point, strategy:
@@ -23,8 +25,19 @@ function getResumePoint(db, config) {
 
 function counstructTailingQuery(config) {
 	const query = {$or: []};
-	const p = config.uri.split('/'); // Assume db uri last part is the database name
+	if (!config.uri) {
+		return query;
+	}
+
+	// Get db Name
+	let p = new URL(config.uri);
+	p = p.pathname;
+	if (p === '/') {
+		return query;
+	}
+	p = p.split('/');
 	const db = p[p.length - 1];
+	
 	config.collections.forEach(coll => {
 		query.$or.push({ns: `${db}.${coll.name}`, ts: {$gt: coll.lowerBound}})
 	});
