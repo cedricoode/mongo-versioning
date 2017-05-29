@@ -25,7 +25,7 @@ function getResumePoint(db, config) {
 
 function counstructTailingQuery(config) {
 	const query = {$or: []};
-	if (!config.uri) {
+	if (typeof config.uri !== 'string') {
 		return query;
 	}
 
