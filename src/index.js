@@ -23,8 +23,10 @@ function getResumePoint(db, config) {
 
 function counstructTailingQuery(config) {
 	const query = {$or: []};
+	const p = config.uri.split('/'); // Assume db uri last part is the database name
+	const db = p[p.length - 1];
 	config.collections.forEach(coll => {
-		query.$or.push({ns: `test.${coll.name}`, ts: {$gt: coll.lowerBound}})
+		query.$or.push({ns: `${db}.${coll.name}`, ts: {$gt: coll.lowerBound}})
 	});
 	return query;
 }
