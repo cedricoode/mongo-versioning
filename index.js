@@ -155,10 +155,12 @@ MongoVersioning.prototype.stop = function stop() {
 MongoVersioning.prototype.insertListener = function insertListener(data, count, strm) {
 	const collName = data.ns.split('.')[1];
 	const doc = data.o || {};
-	doc.versioning_id = doc._id;
+	doc.versioning = {
+		_id: doc._id,
+		ts: data.ts,
+		version: 0
+	}
 	delete doc._id;
-	doc.versioning_ts = data.ts;
-	doc.versioning_version = 0;
 	this.db.collection(this.prefixedColl[collName]).insertOne(doc)
 		.then(() => {console.log(`operation result for: ${collName}`, count); strm.resume();});
 }
@@ -172,7 +174,7 @@ MongoVersioning.prototype.updateListener = async function updateListener(data, c
 	const query = data.o2;
 	// map _id to versioning_id
 	if (query._id) {
-		query.versioning_id = query._id;
+		query['versioning._id'] = query._id;
 		delete query._id;
 	}
 
@@ -182,12 +184,12 @@ MongoVersioning.prototype.updateListener = async function updateListener(data, c
 		.limit(1)
 		.toArray()
 		.then(data => data[0]);
-	doc.versioning_ts = data.ts;
+	doc.versioning.ts = data.ts;
 
 	const update = data.o || {};
 
 	replayUpdate(doc, update);
-	doc.versioning_version = doc.versioning_version + 1;
+	doc.versioning.version = doc.versioning.version + 1;
 	await this.db.collection(this.prefixedColl[collName]).insertOne(doc)
 		.then(() => {console.log(`operation result for: ${collName}`, count); strm.resume();});
 }
@@ -199,10 +201,10 @@ MongoVersioning.prototype.deleteListener = function deleteListener(data, count, 
 		//console.log('delete op', data)
 	const collName = data.ns.split('.')[1];
 	const obj = data.o || {};
-	obj.versioning_id = obj._id;
+	obj.versioning._id = obj._id;
 	delete obj._id;
-	obj.versioning_ts = data.ts;
-	obj.versioning_delete = true;
+	obj.versioning.ts = data.ts;
+	obj.versioning.deleted = true;
 	this.db.collection(this.prefixedColl[collName]).insertOne(obj)
 		.then(() => {console.log(`operation result for: ${collName}`, count); strm.resume();});
 }
@@ -225,31 +227,13 @@ MongoVersioning.prototype.errListener = function errListener(data, count) {
 /**
  * Method primarily removes versioning* internal field and map
  * to relevent method.
- * e.g. versioning_id -> _id
- * versioning_version -> version|versioning_version
- * versioning_ts -> void|null
+ * e.g. versioning._id -> _id
  * @param {Object} doc versioned doc to get removed.
  */
 MongoVersioning.mapToInstance = function mapToInstance(doc) {
 	for (let prop in doc) {
 		if (prop.indexOf('versioning') === 0 && doc.hasOwnProperty(prop)) {
-			switch(prop) {
-				case 'versioning_id':
-				  doc._id = doc.versioning_id; // Override original mongodb _id.
-					delete doc.versioning_id;
-					break;
-				case 'versioning_ts':
-					delete doc.versioning_ts;
-					break;
-				case 'versioning_version':
-					if (doc.version) {
-						break; // If version already exists, keep it.
-					} else { 
-						doc.version = doc.versioning_version; // If not map versioning_version to version
-						delete doc.versioning_version;
-						break;
-					}
-			}
+			doc._id = doc.versioning._id; // Override original mongodb _id.
 		}
 	}
 	return doc;

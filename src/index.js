@@ -11,10 +11,10 @@ const URL = require('url').URL;
 function getResumePoint(db, config) {
 	return Promise.all(config.collections.map(coll => {
 		const c = db.collection(`${config.prefix}${coll.name}`)
-		return c.find().sort({versioning_ts: -1, _id: -1}).limit(1).toArray()
+		return c.find().sort({'versioning.ts': -1, _id: -1}).limit(1).toArray()
 			.then(data => {
 				if (data && data.length > 0) {
-					coll.lowerBound = data[0].versioning_ts; // lower bound to last applied
+					coll.lowerBound = data[0].versioning.ts; // lower bound to last applied
 				}
 				else {
 					coll.lowerBound = Timestamp(0, 0); // lower bound to all the previous data
