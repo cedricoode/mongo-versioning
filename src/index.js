@@ -1,5 +1,5 @@
 const { Timestamp, ObjectID } = require('mongodb');
-const URL = require('url');
+const URL = require('url').URL;
 
 /**
  * Called once connection is established.
